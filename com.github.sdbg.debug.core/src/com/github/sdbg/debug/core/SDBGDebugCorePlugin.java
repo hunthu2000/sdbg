@@ -99,11 +99,7 @@ public class SDBGDebugCorePlugin extends Plugin implements DebugOptionsListener 
 
   public static final String PREFS_SHOW_RUN_RESUME_DIALOG = "showRunResumeDialog";
 
-  private ServiceTracker<DebugOptions, Object> debugTracker;
-
-  private IEclipsePreferences prefs;
-
-  private IUserAgentManager userAgentManager;
+  public static final String PREFS_CHROME_EXECUTABLE_LOCATION = "chromeExecutableLocation";
 
   /**
    * Create a Status object with the given message and this plugin's ID.
@@ -199,6 +195,12 @@ public class SDBGDebugCorePlugin extends Plugin implements DebugOptionsListener 
     return new CoreException(new Status(IStatus.ERROR, pluginId, e.getMessage(), e));
   }
 
+  private ServiceTracker<DebugOptions, Object> debugTracker;
+
+  private IEclipsePreferences prefs;
+
+  private IUserAgentManager userAgentManager;
+
   public boolean canShowRunResumeDialog() {
     return getPrefs().getBoolean(PREFS_SHOW_RUN_RESUME_DIALOG, true);
   }
@@ -227,6 +229,10 @@ public class SDBGDebugCorePlugin extends Plugin implements DebugOptionsListener 
 
   public String getBrowserName() {
     return getPrefs().get(PREFS_BROWSER_NAME, "");
+  }
+
+  public String getChromeExecutableLocation() {
+    return getPrefs().get(PREFS_CHROME_EXECUTABLE_LOCATION, "");
   }
 
   public boolean getInvokeToString() {
@@ -291,6 +297,16 @@ public class SDBGDebugCorePlugin extends Plugin implements DebugOptionsListener 
       getPrefs().flush();
     } catch (BackingStoreException exception) {
       logError(exception);
+    }
+  }
+
+  public void setChromeExecutableLocation(String value) {
+    getPrefs().put(PREFS_CHROME_EXECUTABLE_LOCATION, value);
+
+    try {
+      getPrefs().flush();
+    } catch (BackingStoreException e) {
+
     }
   }
 

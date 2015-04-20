@@ -81,6 +81,43 @@ public class BrowserManager {
     this.adbManager = new ADBManager();
   }
 
+  private List<String> buildArgumentsList(SDBGLaunchConfigWrapper launchConfig, String url,
+      int devToolsPortNumber, List<String> extraArguments) {
+    List<String> arguments = new ArrayList<String>();
+
+    arguments.add(getBrowserExecutable().getAbsolutePath());
+
+    if (devToolsPortNumber > -1) {
+      // Enable remote debug over HTTP on the specified port.
+      arguments.add("--remote-debugging-port=" + devToolsPortNumber);
+    }
+
+    // In order to start up multiple Chrome processes, we need to specify a different user dir.
+    arguments.add("--user-data-dir="
+        + getCreateUserDataDirectory(browserDataDirName).getAbsolutePath());
+
+    // Whether or not it's actually the first run.
+    arguments.add("--no-first-run");
+
+    // Disables the default browser check.
+    arguments.add("--no-default-browser-check");
+
+    // Bypass the error dialog when the profile lock couldn't be attained.
+    arguments.add("--no-process-singleton-dialog");
+
+    arguments.addAll(extraArguments);
+
+    for (String arg : launchConfig.getArgumentsAsArray()) {
+      arguments.add(arg);
+    }
+
+    if (url != null) {
+      arguments.add(url);
+    }
+
+    return arguments;
+  }
+
   public WebkitDebugTarget connect(ILaunch launch, ILaunchConfiguration configuration,
       IResourceResolver resourceResolver, IBrowserTabChooser browserTabChooser, String host,
       int port, IProgressMonitor monitor) throws CoreException {
@@ -235,180 +272,6 @@ public class BrowserManager {
     }
   }
 
-  public void dispose() {
-    if (!isProcessTerminated(browserProcess)) {
-      browserProcess.destroy();
-    }
-  }
-
-  public void launchBrowser(ILaunch launch, ILaunchConfiguration configuration,
-      IResourceResolver resourceResolver, IBrowserTabChooser browserTabChooser, String url,
-      IProgressMonitor monitor, boolean enableDebugging, List<String> extraCommandLineArgs)
-      throws CoreException {
-    try {
-      if (launchSemaphore.tryAcquire()) {
-        try {
-          SDBGLaunchConfigWrapper launchConfig = new SDBGLaunchConfigWrapper(configuration);
-          launchConfig.markAsLaunched();
-
-          monitor.beginTask("Launching Chrome...", enableDebugging ? 7 : 2);
-
-          // avg: 0.434 sec (old: 0.597)
-          LogTimer timer = new LogTimer("Chrome debug startup");
-
-          // avg: 55ms
-          timer.startTask("Chrome startup");
-
-          // for now, check if browser is open, and connection is alive
-          boolean restart = browserProcess == null || isProcessTerminated(browserProcess)
-              || WebkitDebugTarget.getActiveTarget() == null
-              || !WebkitDebugTarget.getActiveTarget().canTerminate();
-
-          // we only re-cycle the debug connection if we're launching the same launch configuration
-          if (!restart) {
-            if (!WebkitDebugTarget.getActiveTarget().getLaunch().getLaunchConfiguration().equals(
-                launch.getLaunchConfiguration())) {
-              restart = true;
-            }
-          }
-
-          if (!restart) {
-            if (enableDebugging != WebkitDebugTarget.getActiveTarget().getEnableBreakpoints()) {
-              restart = true;
-            }
-          }
-
-          CoreLaunchUtils.removeTerminatedLaunches();
-
-          File browserExecutable = getBrowserExecutable();
-
-          if (!restart && url != null && resourceResolver != null) {
-            DebugPlugin.getDefault().getLaunchManager().removeLaunch(launch);
-
-            try {
-              WebkitDebugTarget.getActiveTarget().navigateToUrl(
-                  launch.getLaunchConfiguration(),
-                  url,
-                  true/*enableBreakpoints*/,
-                  resourceResolver);
-            } catch (IOException e) {
-              SDBGDebugCorePlugin.logError(e);
-            }
-          } else {
-            terminateExistingBrowserProcess();
-
-            StringBuilder processDescription = new StringBuilder();
-
-            int[] devToolsPortNumberHolder = new int[1];
-            ListeningStream browserOutput = startNewBrowserProcess(
-                launchConfig,
-                url,
-                monitor,
-                enableDebugging,
-                processDescription,
-                extraCommandLineArgs,
-                devToolsPortNumberHolder);
-
-            sleep(100);
-
-            monitor.worked(1);
-
-            if (isProcessTerminated(browserProcess)) {
-              SDBGDebugCorePlugin.logError("Browser output: " + browserOutput.toString());
-
-              throw new CoreException(new Status(
-                  IStatus.ERROR,
-                  SDBGDebugCorePlugin.PLUGIN_ID,
-                  "Could not launch browser - process terminated on startup"
-                      + getProcessStreamMessage(browserOutput.toString())));
-            }
-
-            if (enableDebugging) {
-              connectToChromiumDebug(
-                  browserExecutable.getName(),
-                  launch,
-                  launchConfig,
-                  url,
-                  monitor,
-                  browserProcess,
-                  timer,
-                  true/*enableBreakpoints*/,
-                  null,
-                  devToolsPortNumberHolder[0],
-                  20 * 1000L/*maxStartupDelay*/,
-                  browserOutput,
-                  processDescription.toString(),
-                  resourceResolver,
-                  browserTabChooser,
-                  false/*remote*/);
-            } else {
-              registerProcess(
-                  launch,
-                  launchConfig,
-                  DebugPlugin.newProcess(launch, browserProcess, browserExecutable.getName()
-                      + " - run only, debugging DISABLED (" + new Date() + ")"),
-                  processDescription.toString());
-            }
-          }
-
-          DebugUIHelper.getHelper().activateApplication(browserExecutable, "Chrome");
-
-          timer.stopTask();
-          timer.stopTimer();
-          monitor.done();
-        } finally {
-          launchSemaphore.release();
-        }
-      }
-    } catch (CoreException e) {
-      DebugPlugin.getDefault().getLaunchManager().removeLaunch(launch);
-      throw e;
-    }
-  }
-
-  // Only exists to support the funky Chrome Application launch
-  protected IResourceResolver createResourceResolver(ILaunch launch,
-      ILaunchConfiguration configuration, IBrowserTabInfo tab) {
-    throw new UnsupportedOperationException("Not implemented");
-  }
-
-  private List<String> buildArgumentsList(SDBGLaunchConfigWrapper launchConfig, String url,
-      int devToolsPortNumber, List<String> extraArguments) {
-    List<String> arguments = new ArrayList<String>();
-
-    arguments.add(getBrowserExecutable().getAbsolutePath());
-
-    if (devToolsPortNumber > -1) {
-      // Enable remote debug over HTTP on the specified port.
-      arguments.add("--remote-debugging-port=" + devToolsPortNumber);
-    }
-
-    // In order to start up multiple Chrome processes, we need to specify a different user dir.
-    arguments.add("--user-data-dir="
-        + getCreateUserDataDirectory(browserDataDirName).getAbsolutePath());
-
-    // Whether or not it's actually the first run.
-    arguments.add("--no-first-run");
-
-    // Disables the default browser check.
-    arguments.add("--no-default-browser-check");
-
-    // Bypass the error dialog when the profile lock couldn't be attained.
-    arguments.add("--no-process-singleton-dialog");
-
-    arguments.addAll(extraArguments);
-
-    for (String arg : launchConfig.getArgumentsAsArray()) {
-      arguments.add(arg);
-    }
-
-    if (url != null) {
-      arguments.add(url);
-    }
-
-    return arguments;
-  }
-
   private WebkitDebugTarget connectToChromiumDebug(String browserName, ILaunch launch,
       SDBGLaunchConfigWrapper launchConfig, String url, IProgressMonitor monitor,
       Process runtimeProcess, LogTimer timer, boolean enableBreakpoints, String host, int port,
@@ -529,6 +392,12 @@ public class BrowserManager {
     }
   }
 
+  // Only exists to support the funky Chrome Application launch
+  protected IResourceResolver createResourceResolver(ILaunch launch,
+      ILaunchConfiguration configuration, IBrowserTabInfo tab) {
+    throw new UnsupportedOperationException("Not implemented");
+  }
+
   private void describe(List<String> arguments, StringBuilder builder) {
     for (int i = 0; i < arguments.size(); i++) {
       if (i > 0) {
@@ -538,7 +407,14 @@ public class BrowserManager {
     }
   }
 
+  public void dispose() {
+    if (!isProcessTerminated(browserProcess)) {
+      browserProcess.destroy();
+    }
+  }
+
   private File findChromeExecutable() {
+
     // First, try the system property, as user-specified value is preferred
     File file = findChromeExecutable(
         "system property " + CHROME_EXECUTABLE_PROPERTY,
@@ -552,6 +428,14 @@ public class BrowserManager {
     file = findChromeExecutable(
         "environment vairable " + CHROME_ENVIRONMENT_VARIABLE,
         System.getenv(CHROME_ENVIRONMENT_VARIABLE),
+        true/*fileOrDir*/);
+    if (file != null) {
+      return file;
+    }
+
+    file = findChromeExecutable(
+        "eclipse preference ",
+        SDBGDebugCorePlugin.getPlugin().getChromeExecutableLocation(),
         true/*fileOrDir*/);
     if (file != null) {
       return file;
@@ -849,6 +733,131 @@ public class BrowserManager {
       return true;
     } catch (IllegalThreadStateException ex) {
       return false;
+    }
+  }
+
+  public void launchBrowser(ILaunch launch, ILaunchConfiguration configuration,
+      IResourceResolver resourceResolver, IBrowserTabChooser browserTabChooser, String url,
+      IProgressMonitor monitor, boolean enableDebugging, List<String> extraCommandLineArgs)
+      throws CoreException {
+    try {
+      if (launchSemaphore.tryAcquire()) {
+        try {
+          SDBGLaunchConfigWrapper launchConfig = new SDBGLaunchConfigWrapper(configuration);
+          launchConfig.markAsLaunched();
+
+          monitor.beginTask("Launching Chrome...", enableDebugging ? 7 : 2);
+
+          // avg: 0.434 sec (old: 0.597)
+          LogTimer timer = new LogTimer("Chrome debug startup");
+
+          // avg: 55ms
+          timer.startTask("Chrome startup");
+
+          // for now, check if browser is open, and connection is alive
+          boolean restart = browserProcess == null || isProcessTerminated(browserProcess)
+              || WebkitDebugTarget.getActiveTarget() == null
+              || !WebkitDebugTarget.getActiveTarget().canTerminate();
+
+          // we only re-cycle the debug connection if we're launching the same launch configuration
+          if (!restart) {
+            if (!WebkitDebugTarget.getActiveTarget().getLaunch().getLaunchConfiguration().equals(
+                launch.getLaunchConfiguration())) {
+              restart = true;
+            }
+          }
+
+          if (!restart) {
+            if (enableDebugging != WebkitDebugTarget.getActiveTarget().getEnableBreakpoints()) {
+              restart = true;
+            }
+          }
+
+          CoreLaunchUtils.removeTerminatedLaunches();
+
+          File browserExecutable = getBrowserExecutable();
+
+          if (!restart && url != null && resourceResolver != null) {
+            DebugPlugin.getDefault().getLaunchManager().removeLaunch(launch);
+
+            try {
+              WebkitDebugTarget.getActiveTarget().navigateToUrl(
+                  launch.getLaunchConfiguration(),
+                  url,
+                  true/*enableBreakpoints*/,
+                  resourceResolver);
+            } catch (IOException e) {
+              SDBGDebugCorePlugin.logError(e);
+            }
+          } else {
+            terminateExistingBrowserProcess();
+
+            StringBuilder processDescription = new StringBuilder();
+
+            int[] devToolsPortNumberHolder = new int[1];
+            ListeningStream browserOutput = startNewBrowserProcess(
+                launchConfig,
+                url,
+                monitor,
+                enableDebugging,
+                processDescription,
+                extraCommandLineArgs,
+                devToolsPortNumberHolder);
+
+            sleep(100);
+
+            monitor.worked(1);
+
+            if (isProcessTerminated(browserProcess)) {
+              SDBGDebugCorePlugin.logError("Browser output: " + browserOutput.toString());
+
+              throw new CoreException(new Status(
+                  IStatus.ERROR,
+                  SDBGDebugCorePlugin.PLUGIN_ID,
+                  "Could not launch browser - process terminated on startup"
+                      + getProcessStreamMessage(browserOutput.toString())));
+            }
+
+            if (enableDebugging) {
+              connectToChromiumDebug(
+                  browserExecutable.getName(),
+                  launch,
+                  launchConfig,
+                  url,
+                  monitor,
+                  browserProcess,
+                  timer,
+                  true/*enableBreakpoints*/,
+                  null,
+                  devToolsPortNumberHolder[0],
+                  20 * 1000L/*maxStartupDelay*/,
+                  browserOutput,
+                  processDescription.toString(),
+                  resourceResolver,
+                  browserTabChooser,
+                  false/*remote*/);
+            } else {
+              registerProcess(
+                  launch,
+                  launchConfig,
+                  DebugPlugin.newProcess(launch, browserProcess, browserExecutable.getName()
+                      + " - run only, debugging DISABLED (" + new Date() + ")"),
+                  processDescription.toString());
+            }
+          }
+
+          DebugUIHelper.getHelper().activateApplication(browserExecutable, "Chrome");
+
+          timer.stopTask();
+          timer.stopTimer();
+          monitor.done();
+        } finally {
+          launchSemaphore.release();
+        }
+      }
+    } catch (CoreException e) {
+      DebugPlugin.getDefault().getLaunchManager().removeLaunch(launch);
+      throw e;
     }
   }
 
